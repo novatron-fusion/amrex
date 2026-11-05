@@ -73,64 +73,6 @@ void mlebndfdlap_gsrb (int i, int j, int k, Array4<Real> const& x,
     }
 }
 
-// Symmetric EB stencil: see the 2D header.
-
-//! Open length from node (i,j,k) toward side s (0 low, 1 high) in direction d.
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-Real mlebndfdlap_open_length (int i, int j, int k, int d, int s,
-                              Array4<Real const> const& ebpx, Array4<Real const> const& ebpy,
-                              Array4<Real const> const& ebpz) noexcept
-{
-    if (d == 0) {
-        return s ? ebpx(i,j,k) : mlebndfdlap_hm(ebpx(i-1,j,k));
-    } else if (d == 1) {
-        return s ? ebpy(i,j,k) : mlebndfdlap_hm(ebpy(i,j-1,k));
-    } else {
-        return s ? ebpz(i,j,k) : mlebndfdlap_hm(ebpz(i,j,k-1));
-    }
-}
-
-/**
- * \brief Link factors of a node, without sigma and the row scale: b_d times
- * Shortley-Weller 2 / (h- + h+), or b_d for the symmetric stencil.
- */
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-void mlebndfdlap_link_factors (Real const (&h)[3][2], Real const (&b)[3], bool sym,
-                               Real (&f)[3][2]) noexcept
-{
-    for (int d = 0; d < 3; ++d) {
-        Real const c = sym ? b[d] : b[d] * Real(2.0) / (h[d][0]+h[d][1]);
-        f[d][0] = c;
-        f[d][1] = c;
-    }
-}
-
-//! Open lengths and open links of node (i,j,k), indexed [direction][side].
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-void mlebndfdlap_links (int i, int j, int k, Array4<Real const> const& levset,
-                        Array4<Real const> const& ebpx, Array4<Real const> const& ebpy,
-                        Array4<Real const> const& ebpz,
-                        Real (&h)[3][2], bool (&open)[3][2]) noexcept
-{
-    for (int d = 0; d < 3; ++d) {
-        for (int s = 0; s < 2; ++s) {
-            int const o = s ? 1 : -1;
-            h[d][s] = mlebndfdlap_open_length(i,j,k,d,s,ebpx,ebpy,ebpz);
-            open[d][s] = levset(i + (d==0 ? o : 0), j + (d==1 ? o : 0), k + (d==2 ? o : 0))
-                < Real(0.0) && h[d][s] == Real(1.0);
-        }
-    }
-}
-
-template <typename S>
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-Real mlebndfdlap_edge_sig (S const& sig, int i, int j, int k, int d, int s) noexcept
-{
-    if (d == 0) { return s ? sig.x(i,j,k) : sig.x(i-1,j,k); }
-    if (d == 1) { return s ? sig.y(i,j,k) : sig.y(i,j-1,k); }
-    return s ? sig.z(i,j,k) : sig.z(i,j,k-1);
-}
-
 template <typename S, typename F>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mlebndfdlap_adotx_eb_doit (int i, int j, int k, Array4<Real> const& y,
@@ -145,29 +87,57 @@ void mlebndfdlap_adotx_eb_doit (int i, int j, int k, Array4<Real> const& y,
         y(i,j,k) = Real(0.0);
     } else {
         Real const xc = x(i,j,k);
-        Real h[3][2];
-        bool open[3][2];
-        mlebndfdlap_links(i,j,k,levset,ebpx,ebpy,ebpz,h,open);
-        Real const scale = amrex::min(h[0][0],h[0][1],h[1][0],h[1][1],h[2][0],h[2][1]);
-        Real const b[3] = {bx, by, bz};
-        Real f[3][2];
-        mlebndfdlap_link_factors(h,b,sym,f);
+        Real const hpx = ebpx(i  ,j  ,k  );
+        Real const hmx = mlebndfdlap_hm(ebpx(i-1,j  ,k  ));
+        Real const hpy = ebpy(i  ,j  ,k  );
+        Real const hmy = mlebndfdlap_hm(ebpy(i  ,j-1,k  ));
+        Real const hpz = ebpz(i  ,j  ,k  );
+        Real const hmz = mlebndfdlap_hm(ebpz(i  ,j  ,k-1));
+        Real const scale = amrex::min(hmx,hpx,hmy,hpy,hmz,hpz);
 
         Real out = Real(0.0);
-        for (int d = 0; d < 3; ++d) {
-            for (int s = 1; s >= 0; --s) { // high side first, as Shortley-Weller had it
-                int const o = s ? 1 : -1;
-                int const ii = i + (d==0 ? o : 0);
-                int const jj = j + (d==1 ? o : 0);
-                int const kk = k + (d==2 ? o : 0);
-                Real const c = mlebndfdlap_edge_sig(sig,i,j,k,d,s) * f[d][s];
-                if (open[d][s]) {
-                    out += c * scale * (x(ii,jj,kk) - xc);
-                } else {
-                    out += c * mlebndfdlap_scaled_hinv(scale, h[d][s]) * (xeb(ii,jj,kk) - xc);
-                }
-            }
+        Real fac = sym ? bx : bx * Real(2.0) / (hpx+hmx);
+        Real sigma = sig.x(i,j,k);
+        if (levset(i+1,j,k) < Real(0.0) && hpx == Real(1.0)) {
+            out += sigma * fac * scale * (x(i+1,j,k) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hpx) * (xeb(i+1,j,k) - xc);
         }
+        sigma = sig.x(i-1,j,k);
+        if (levset(i-1,j,k) < Real(0.0) && hmx == Real(1.0)) {
+            out += sigma * fac * scale * (x(i-1,j,k) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hmx) * (xeb(i-1,j,k) - xc);
+        }
+
+        fac = sym ? by : by * Real(2.0) / (hpy+hmy);
+        sigma = sig.y(i,j,k);
+        if (levset(i,j+1,k) < Real(0.0) && hpy == Real(1.0)) {
+            out += sigma * fac * scale * (x(i,j+1,k) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hpy) * (xeb(i,j+1,k) - xc);
+        }
+        sigma = sig.y(i,j-1,k);
+        if (levset(i,j-1,k) < Real(0.0) && hmy == Real(1.0)) {
+            out += sigma * fac * scale * (x(i,j-1,k) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hmy) * (xeb(i,j-1,k) - xc);
+        }
+
+        fac = sym ? bz : bz * Real(2.0) / (hpz+hmz);
+        sigma = sig.z(i,j,k);
+        if (levset(i,j,k+1) < Real(0.0) && hpz == Real(1.0)) {
+            out += sigma * fac * scale * (x(i,j,k+1) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hpz) * (xeb(i,j,k+1) - xc);
+        }
+        sigma = sig.z(i,j,k-1);
+        if (levset(i,j,k-1) < Real(0.0) && hmz == Real(1.0)) {
+            out += sigma * fac * scale * (x(i,j,k-1) - xc);
+        } else {
+            out += sigma * fac * mlebndfdlap_scaled_hinv(scale, hmz) * (xeb(i,j,k-1) - xc);
+        }
+
         y(i,j,k) = out;
     }
 }
@@ -216,30 +186,69 @@ void mlebndfdlap_gsrb_eb (int i, int j, int k, Array4<Real> const& x,
         if (dmsk(i,j,k)) {
             x(i,j,k) = Real(0.);
         } else {
-            Real h[3][2];
-            bool open[3][2];
-            mlebndfdlap_links(i,j,k,levset,ebpx,ebpy,ebpz,h,open);
-            Real const scale = amrex::min(h[0][0],h[0][1],h[1][0],h[1][1],h[2][0],h[2][1]);
-            Real const b[3] = {bx, by, bz};
-            Real f[3][2];
-            mlebndfdlap_link_factors(h,b,sym,f);
-
+            Real const hpx = ebpx(i  ,j  ,k  );
+            Real const hmx = mlebndfdlap_hm(ebpx(i-1,j  ,k  ));
+            Real const hpy = ebpy(i  ,j  ,k  );
+            Real const hmy = mlebndfdlap_hm(ebpy(i  ,j-1,k  ));
+            Real const hpz = ebpz(i  ,j  ,k  );
+            Real const hmz = mlebndfdlap_hm(ebpz(i  ,j  ,k-1));
+            Real const scale = amrex::min(hmx,hpx,hmy,hpy,hmz,hpz);
             bool cut = false; // a link to the EB
+
             Real gamma = Real(0.0);
             Real rho = Real(0.0);
-            for (int d = 0; d < 3; ++d) {
-                for (int s = 1; s >= 0; --s) {
-                    int const o = s ? 1 : -1;
-                    Real const c = mlebndfdlap_edge_sig(sig,i,j,k,d,s) * f[d][s];
-                    if (open[d][s]) {
-                        gamma -= c * scale;
-                        rho += c * scale * x(i + (d==0 ? o : 0), j + (d==1 ? o : 0),
-                                             k + (d==2 ? o : 0));
-                    } else {
-                        cut = true;
-                        gamma -= c * mlebndfdlap_scaled_hinv(scale, h[d][s]);
-                    }
-                }
+            Real fac = sym ? bx : bx * Real(2.0) / (hpx+hmx);
+            Real sigma = sig.x(i,j,k);
+            if (levset(i+1,j,k) < Real(0.0) && hpx == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i+1,j,k);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hpx);
+            }
+            sigma = sig.x(i-1,j,k);
+            if (levset(i-1,j,k) < Real(0.0) && hmx == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i-1,j,k);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hmx);
+            }
+
+            fac = sym ? by : by * Real(2.0) / (hpy+hmy);
+            sigma = sig.y(i,j,k);
+            if (levset(i,j+1,k) < Real(0.0) && hpy == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i,j+1,k);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hpy);
+            }
+            sigma = sig.y(i,j-1,k);
+            if (levset(i,j-1,k) < Real(0.0) && hmy == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i,j-1,k);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hmy);
+            }
+
+            fac = sym ? bz : bz * Real(2.0) / (hpz+hmz);
+            sigma = sig.z(i,j,k);
+            if (levset(i,j,k+1) < Real(0.0) && hpz == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i,j,k+1);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hpz);
+            }
+            sigma = sig.z(i,j,k-1);
+            if (levset(i,j,k-1) < Real(0.0) && hmz == Real(1.0)) {
+                gamma -= sigma * fac * scale;
+                rho += sigma * fac * scale * x(i,j,k-1);
+            } else {
+                cut = true;
+                gamma -= sigma * fac * mlebndfdlap_scaled_hinv(scale, hmz);
             }
 
             Real const Ax = rho + gamma*x(i,j,k);

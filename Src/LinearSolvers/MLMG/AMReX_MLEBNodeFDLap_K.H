@@ -714,7 +714,7 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
         int const dk = (idim == 2) ? 1 : 0;
         Real const hp = hp_arr[idim];
         Real const hm = hm_arr[idim];
-        Real const sw = bcoef[idim] * Real(2.0) / (hp+hm);
+        Real const fac = sym ? bcoef[idim] : bcoef[idim] * Real(2.0) / (hp+hm);
 
         int const nd = (idim == 0) ? i : ((idim == 1) ? j : k);
         int const dlo = (idim == 0) ? ndlo.x : ((idim == 1) ? ndlo.y : ndlo.z);
@@ -724,7 +724,6 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
             Real const s = ebnodefdlap_detail::edge_sigma(i,j,k,idim,side,has_sig,sig);
             bool const cut = (side == 0) ? cut_lo_arr[idim] : cut_hi_arr[idim];
             Real const h = (side == 0) ? hm : hp;
-            Real const fac = sym ? bcoef[idim] : sw;
             if (cut) {
                 // The neighbor is covered, so it only contributes a Dirichlet
                 // value, which is zero here.
