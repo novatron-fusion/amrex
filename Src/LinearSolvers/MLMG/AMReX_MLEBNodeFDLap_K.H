@@ -825,10 +825,6 @@ mlebndfdlap_ijmat_row_rz (int i, int j, int k,
         if (!axis) { scale = amrex::min(scale, h[0][0]); }
     }
 
-    // Link factors: Shortley-Weller, or the symmetric stencil's apertures.
-    Real f[2][2] = {{Real(1.0), Real(1.0)}, {Real(1.0), Real(1.0)}};
-    if (has_eb) { mlebndfdlap_rz_link_factors(r, h, sym, f); }
-
     Real diag = Real(0.0);
     Real coef[4] = {};
     bool used[4] = {};
@@ -845,13 +841,15 @@ mlebndfdlap_ijmat_row_rz (int i, int j, int k,
             // Coefficient of the neighbor, or of the EB value if blocked.
             Real c;
             if (idim == 1) {
-                Real const fac = f[1][side] / (dz*dz);
+                Real const fac = sym ? Real(1.0) / (dz*dz)
+                                     : Real(2.0) / ((h[1][0]+h[1][1]) * dz*dz);
                 c = s * fac * (blocked ? mlebndfdlap_scaled_hinv(scale, hh) : scale);
             } else if (axis) {
-                Real const fac = Real(4.0) * f[0][side] / (dr*dr);
+                Real const fac = Real(4.0) / (dr*dr);
                 c = s * fac * (blocked ? mlebndfdlap_scaled_h2inv(scale, hh) : scale);
             } else {
-                Real const fac = f[0][side] / (r * dr*dr);
+                Real const fac = sym ? Real(1.0) / (r * dr*dr)
+                                     : Real(2.0) / ((h[0][0]+h[0][1]) * r * dr*dr);
                 Real const sgn = side ? Real(1.0) : Real(-1.0);
                 c = blocked
                     ? s * fac * mlebndfdlap_scaled_hinv(scale, hh) * (r + sgn*Real(0.5)*hh*dr)
