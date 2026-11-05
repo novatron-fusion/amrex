@@ -662,6 +662,7 @@ Real edge_sigma (int i, int j, int k, int idim, int side, bool has_sig,
  * \param ndlo, ndhi  bounds of the nodal domain
  * \param reflect_lo  whether the low-side domain BC mirrors ghost nodes
  * \param reflect_hi  whether the high-side domain BC mirrors ghost nodes
+ * \param sym         symmetric EB stencil (MLEBNodeFDLaplacian::setEBSymmetric)
  */
 template <typename AlgGid>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -675,7 +676,8 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
                        GpuArray<Array4<Real const>,AMREX_SPACEDIM> const& ebp,
                        Dim3 const& ndlo, Dim3 const& ndhi,
                        GpuArray<bool,AMREX_SPACEDIM> const& reflect_lo,
-                       GpuArray<bool,AMREX_SPACEDIM> const& reflect_hi) noexcept
+                       GpuArray<bool,AMREX_SPACEDIM> const& reflect_hi,
+                       bool sym) noexcept
 {
     constexpr auto gidmax = std::numeric_limits<AlgGid>::max();
 
@@ -712,7 +714,7 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
         int const dk = (idim == 2) ? 1 : 0;
         Real const hp = hp_arr[idim];
         Real const hm = hm_arr[idim];
-        Real const fac = bcoef[idim] * Real(2.0) / (hp+hm);
+        Real const sw = bcoef[idim] * Real(2.0) / (hp+hm);
 
         int const nd = (idim == 0) ? i : ((idim == 1) ? j : k);
         int const dlo = (idim == 0) ? ndlo.x : ((idim == 1) ? ndlo.y : ndlo.z);
@@ -722,6 +724,7 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
             Real const s = ebnodefdlap_detail::edge_sigma(i,j,k,idim,side,has_sig,sig);
             bool const cut = (side == 0) ? cut_lo_arr[idim] : cut_hi_arr[idim];
             Real const h = (side == 0) ? hm : hp;
+            Real const fac = sym ? bcoef[idim] : sw;
             if (cut) {
                 // The neighbor is covered, so it only contributes a Dirichlet
                 // value, which is zero here.
@@ -782,6 +785,7 @@ mlebndfdlap_ijmat_row (int i, int j, int k,
  * \param dz     axial cell size divided by sqrt(sigma_z)
  * \param rlo    r of node 0
  * \param alpha  coefficient of the alpha/r^2 term
+ * \param sym    symmetric EB stencil (MLEBNodeFDLaplacian::setEBSymmetric)
  */
 template <typename AlgGid>
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
@@ -795,7 +799,8 @@ mlebndfdlap_ijmat_row_rz (int i, int j, int k,
                           Real dr, Real dz, Real rlo, Real alpha,
                           Dim3 const& ndlo, Dim3 const& ndhi,
                           GpuArray<bool,AMREX_SPACEDIM> const& reflect_lo,
-                          GpuArray<bool,AMREX_SPACEDIM> const& reflect_hi) noexcept
+                          GpuArray<bool,AMREX_SPACEDIM> const& reflect_hi,
+                          bool sym) noexcept
 {
     constexpr auto gidmax = std::numeric_limits<AlgGid>::max();
 
@@ -820,6 +825,10 @@ mlebndfdlap_ijmat_row_rz (int i, int j, int k,
         if (!axis) { scale = amrex::min(scale, h[0][0]); }
     }
 
+    // Link factors: Shortley-Weller, or the symmetric stencil's apertures.
+    Real f[2][2] = {{Real(1.0), Real(1.0)}, {Real(1.0), Real(1.0)}};
+    if (has_eb) { mlebndfdlap_rz_link_factors(r, h, sym, f); }
+
     Real diag = Real(0.0);
     Real coef[4] = {};
     bool used[4] = {};
@@ -836,13 +845,13 @@ mlebndfdlap_ijmat_row_rz (int i, int j, int k,
             // Coefficient of the neighbor, or of the EB value if blocked.
             Real c;
             if (idim == 1) {
-                Real const fac = Real(2.0) / ((h[1][0]+h[1][1]) * dz*dz);
+                Real const fac = f[1][side] / (dz*dz);
                 c = s * fac * (blocked ? mlebndfdlap_scaled_hinv(scale, hh) : scale);
             } else if (axis) {
-                Real const fac = Real(4.0) / (dr*dr);
+                Real const fac = Real(4.0) * f[0][side] / (dr*dr);
                 c = s * fac * (blocked ? mlebndfdlap_scaled_h2inv(scale, hh) : scale);
             } else {
-                Real const fac = Real(2.0) / ((h[0][0]+h[0][1]) * r * dr*dr);
+                Real const fac = f[0][side] / (r * dr*dr);
                 Real const sgn = side ? Real(1.0) : Real(-1.0);
                 c = blocked
                     ? s * fac * mlebndfdlap_scaled_hinv(scale, hh) * (r + sgn*Real(0.5)*hh*dr)

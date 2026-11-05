@@ -93,6 +93,22 @@ public:
     //! Set the radial `alpha/r^2` term used when RZ is enabled.
     void setAlpha (Real a_alpha);
 
+    /**
+     * \brief Use the symmetric EB stencil (default false: Shortley-Weller).
+     *
+     * Shortley-Weller weights the links of a node next to the EB by
+     * 2 / (h- + h+) per direction, so the matrix times the node volumes is
+     * not symmetric: the potential at b of a charge on the node next to the
+     * EB is (1 + h) / 2 times the potential there of the same charge at b
+     * (for one cut direction).  Particles near the EB then exert forces on
+     * the others that differ from the forces they feel, and the total energy
+     * is not conserved.  The symmetric stencil drops that factor (Gibou,
+     * Fedkiw, Cheng and Kang, J. Comput. Phys. 176, 205 (2002)): the links
+     * between uncovered nodes keep their regular coefficients, the link to
+     * the EB is 1/h, and the solution stays second-order accurate.
+     */
+    void setEBSymmetric (bool flag) noexcept { m_eb_symmetric = flag; }
+
 #ifdef AMREX_USE_EB
 
     //! Override phi on embedded boundaries (constant value).
@@ -263,6 +279,7 @@ private:
     Vector<MultiFab> m_phi_eb;
     int m_rz = false;
     Real m_rz_alpha = 0._rt;
+    bool m_eb_symmetric = false;
 
 #ifdef AMREX_USE_EB
     //! Nodal level set on every MG level.  A node is covered if it's >= 0.

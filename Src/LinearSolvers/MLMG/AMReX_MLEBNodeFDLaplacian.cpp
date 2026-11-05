@@ -114,7 +114,8 @@ void fapply_box (Box const& box, Array4<Real> const& y, Array4<Real const> const
                  [[maybe_unused]] P const& phieb,
                  GpuArray<Real,AMREX_SPACEDIM> const& b,
                  [[maybe_unused]] bool rz, [[maybe_unused]] Real dx0, [[maybe_unused]] Real dx1,
-                 [[maybe_unused]] Real xlo, [[maybe_unused]] Real alpha)
+                 [[maybe_unused]] Real xlo, [[maybe_unused]] Real alpha,
+                 [[maybe_unused]] bool sym)
 {
 #if defined(AMREX_USE_EB) && (AMREX_SPACEDIM > 1)
     if (has_eb) {
@@ -123,7 +124,7 @@ void fapply_box (Box const& box, Array4<Real> const& y, Array4<Real const> const
             AMREX_HOST_DEVICE_FOR_3D(box, i, j, k,
             {
                 mlebndfdlap_adotx_rz_eb(i,j,k,y,x,levset,dmsk,ebp[0],ebp[1],sig,phieb,
-                                        dx0,dx1,xlo,alpha);
+                                        dx0,dx1,xlo,alpha,sym);
             });
         } else
 #endif
@@ -131,7 +132,7 @@ void fapply_box (Box const& box, Array4<Real> const& y, Array4<Real const> const
             AMREX_HOST_DEVICE_FOR_3D(box, i, j, k,
             {
                 mlebndfdlap_adotx_eb(i,j,k,y,x,levset,dmsk,AMREX_D_DECL(ebp[0],ebp[1],ebp[2]),
-                                     sig,phieb,AMREX_D_DECL(b[0],b[1],b[2]));
+                                     sig,phieb,AMREX_D_DECL(b[0],b[1],b[2]),sym);
             });
         }
     } else
@@ -161,7 +162,8 @@ void fsmooth_box (Box const& box, Array4<Real> const& sol, Array4<Real const> co
                   [[maybe_unused]] GpuArray<Array4<Real const>,AMREX_SPACEDIM> const& ebp,
                   GpuArray<Real,AMREX_SPACEDIM> const& b,
                   [[maybe_unused]] bool rz, [[maybe_unused]] Real dx0, [[maybe_unused]] Real dx1,
-                  [[maybe_unused]] Real xlo, [[maybe_unused]] Real alpha, int redblack)
+                  [[maybe_unused]] Real xlo, [[maybe_unused]] Real alpha, int redblack,
+                  [[maybe_unused]] bool sym)
 {
 #if defined(AMREX_USE_EB) && (AMREX_SPACEDIM > 1)
     if (has_eb) {
@@ -170,7 +172,7 @@ void fsmooth_box (Box const& box, Array4<Real> const& sol, Array4<Real const> co
             AMREX_HOST_DEVICE_FOR_3D(box, i, j, k,
             {
                 mlebndfdlap_gsrb_rz_eb(i,j,k,sol,rhs,levset,dmsk,ebp[0],ebp[1],sig,
-                                       dx0,dx1,xlo,redblack,alpha);
+                                       dx0,dx1,xlo,redblack,alpha,sym);
             });
         } else
 #endif
@@ -178,7 +180,7 @@ void fsmooth_box (Box const& box, Array4<Real> const& sol, Array4<Real const> co
             AMREX_HOST_DEVICE_FOR_3D(box, i, j, k,
             {
                 mlebndfdlap_gsrb_eb(i,j,k,sol,rhs,levset,dmsk,AMREX_D_DECL(ebp[0],ebp[1],ebp[2]),
-                                    sig,AMREX_D_DECL(b[0],b[1],b[2]),redblack);
+                                    sig,AMREX_D_DECL(b[0],b[1],b[2]),redblack,sym);
             });
         }
     } else
@@ -228,7 +230,7 @@ void fsmooth_fused (MultiFab& sol, MultiFab const& rhs, iMultiFab const& dmask, 
                     GpuArray<Real,AMREX_SPACEDIM> const& b,
                     [[maybe_unused]] bool rz, [[maybe_unused]] Real dx0,
                     [[maybe_unused]] Real dx1, [[maybe_unused]] Real xlo,
-                    [[maybe_unused]] Real alpha, int redblack)
+                    [[maybe_unused]] Real alpha, int redblack, [[maybe_unused]] bool sym)
 {
     auto const& solma = sol.arrays();
     auto const& rhsma = rhs.const_arrays();
@@ -243,7 +245,7 @@ void fsmooth_fused (MultiFab& sol, MultiFab const& rhs, iMultiFab const& dmask, 
                 if (has_eb[bno]) {
                     mlebndfdlap_gsrb_rz_eb(i,j,k,solma[bno],rhsma[bno],levset[bno],dmskma[bno],
                                            ebp[0][bno],ebp[1][bno],siga(bno),
-                                           dx0,dx1,xlo,redblack,alpha);
+                                           dx0,dx1,xlo,redblack,alpha,sym);
                 } else {
                     mlebndfdlap_gsrb_rz(i,j,k,solma[bno],rhsma[bno],dmskma[bno],siga(bno),
                                         dx0,dx1,xlo,redblack,alpha);
@@ -269,7 +271,7 @@ void fsmooth_fused (MultiFab& sol, MultiFab const& rhs, iMultiFab const& dmask, 
             if (has_eb[bno]) {
                 mlebndfdlap_gsrb_eb(i,j,k,solma[bno],rhsma[bno],levset[bno],dmskma[bno],
                                     AMREX_D_DECL(ebp[0][bno],ebp[1][bno],ebp[2][bno]),
-                                    siga(bno),AMREX_D_DECL(b[0],b[1],b[2]),redblack);
+                                    siga(bno),AMREX_D_DECL(b[0],b[1],b[2]),redblack,sym);
             } else {
                 mlebndfdlap_gsrb(i,j,k,solma[bno],rhsma[bno],dmskma[bno],siga(bno),
                                  AMREX_D_DECL(b[0],b[1],b[2]),redblack);
@@ -1176,6 +1178,7 @@ MLEBNodeFDLaplacian::Fapply (int amrlev, int mglev, MultiFab& out, const MultiFa
 {
     BL_PROFILE("MLEBNodeFDLaplacian::Fapply()");
 
+    [[maybe_unused]] bool const sym = m_eb_symmetric;
     const auto dxinv = m_geom[amrlev][mglev].InvCellSizeArray();
     bool rz = false;
     Real sig0 = Real(1.0), dx0 = Real(0.0), dx1 = Real(0.0), xlo = Real(0.0), alpha = Real(0.0);
@@ -1234,28 +1237,28 @@ MLEBNodeFDLaplacian::Fapply (int amrlev, int mglev, MultiFab& out, const MultiFa
             }
             if (phiebarr) {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phiebarr,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             } else {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phieb,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             }
         } else if (rz) {
             EBNodeFDRZConstSigma const sig{sig0};
             if (phiebarr) {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phiebarr,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             } else {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phieb,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             }
         } else {
             EBNodeFDConstSigma const sig{};
             if (phiebarr) {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phiebarr,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             } else {
                 fapply_box(box, yarr, xarr, dmarr, sig, has_eb, levset, ebp, phieb,
-                           b, rz, dx0, dx1, xlo, alpha);
+                           b, rz, dx0, dx1, xlo, alpha, sym);
             }
         }
     }
@@ -1266,6 +1269,7 @@ MLEBNodeFDLaplacian::Fsmooth (int amrlev, int mglev, MultiFab& sol, const MultiF
 {
     BL_PROFILE("MLEBNodeFDLaplacian::Fsmooth()");
 
+    [[maybe_unused]] bool const sym = m_eb_symmetric;
     const auto dxinv = m_geom[amrlev][mglev].InvCellSizeArray();
     bool rz = false;
     Real sig0 = Real(1.0), dx0 = Real(0.0), dx1 = Real(0.0), xlo = Real(0.0), alpha = Real(0.0);
@@ -1315,15 +1319,15 @@ MLEBNodeFDLaplacian::Fsmooth (int amrlev, int mglev, MultiFab& sol, const MultiF
                     siga.s[idim] = m_sigma_edge[amrlev][mglev][idim].const_arrays();
                 }
                 fsmooth_fused(sol, rhs, dmask, siga, has_eb, levset, ebp,
-                              b, rz, dx0, dx1, xlo, alpha, redblack);
+                              b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             } else if (rz) {
                 EBNodeFDSigmaAll<EBNodeFDRZConstSigma> const siga{{sig0}};
                 fsmooth_fused(sol, rhs, dmask, siga, has_eb, levset, ebp,
-                              b, rz, dx0, dx1, xlo, alpha, redblack);
+                              b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             } else {
                 EBNodeFDSigmaAll<EBNodeFDConstSigma> const siga{};
                 fsmooth_fused(sol, rhs, dmask, siga, has_eb, levset, ebp,
-                              b, rz, dx0, dx1, xlo, alpha, redblack);
+                              b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             }
         }
         nodalSync(amrlev, mglev, sol);
@@ -1365,15 +1369,15 @@ MLEBNodeFDLaplacian::Fsmooth (int amrlev, int mglev, MultiFab& sol, const MultiF
                     sig.s[idim] = m_sigma_edge[amrlev][mglev][idim].const_array(mfi);
                 }
                 fsmooth_box(box, solarr, rhsarr, dmskarr, sig, has_eb, levset, ebp,
-                            b, rz, dx0, dx1, xlo, alpha, redblack);
+                            b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             } else if (rz) {
                 EBNodeFDRZConstSigma const sig{sig0};
                 fsmooth_box(box, solarr, rhsarr, dmskarr, sig, has_eb, levset, ebp,
-                            b, rz, dx0, dx1, xlo, alpha, redblack);
+                            b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             } else {
                 EBNodeFDConstSigma const sig{};
                 fsmooth_box(box, solarr, rhsarr, dmskarr, sig, has_eb, levset, ebp,
-                            b, rz, dx0, dx1, xlo, alpha, redblack);
+                            b, rz, dx0, dx1, xlo, alpha, redblack, sym);
             }
         }
     }
@@ -1535,6 +1539,7 @@ MLEBNodeFDLaplacian::fillMatrix_doit (int mglev, MFIter const& mfi,
                                       AlgInt* ncols, AlgInt* cols, Real* mat) const
 {
     const int amrlev = 0;
+    [[maybe_unused]] bool const sym = m_eb_symmetric;
 
     const Geometry& geom = m_geom[amrlev][mglev];
     const auto dxinv = geom.InvCellSizeArray();
@@ -1605,11 +1610,11 @@ MLEBNodeFDLaplacian::fillMatrix_doit (int mglev, MFIter const& mfi,
         if (rz) {
             return mlebndfdlap_ijmat_row_rz(i, j, k, gid, has_eb, has_sig, sig0, sig,
                                             levset, ebp, dx0, dx1, xlo, alpha,
-                                            ndlo, ndhi, reflect_lo, reflect_hi);
+                                            ndlo, ndhi, reflect_lo, reflect_hi, sym);
         }
 #endif
         return mlebndfdlap_ijmat_row(i, j, k, gid, has_eb, has_sig, bcoef, sig,
-                                     levset, ebp, ndlo, ndhi, reflect_lo, reflect_hi);
+                                     levset, ebp, ndlo, ndhi, reflect_lo, reflect_hi, sym);
     };
 
 #ifdef AMREX_USE_GPU
