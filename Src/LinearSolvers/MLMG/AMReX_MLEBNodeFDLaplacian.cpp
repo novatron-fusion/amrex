@@ -53,10 +53,13 @@ void fill_row_scale (MultiFab& s, Array<MultiFab,AMREX_SPACEDIM> const& ebp,
 
 // Fill ghost cells outside the domain by reflection.  A direction in which the
 // data are nodal is mirrored about the boundary node, a cell-centered direction
-// about the boundary face.  Periodic directions are skipped.  When the ghost
-// cell is outside the domain in direction flip_dir, an EB position p is mirrored
-// to mlebndfdlap_hm(p), or to mlebndfdlap_pmax() if p is 0; -1 disables this.
-void fill_domain_ghost (MultiFab& mf, Geometry const& geom, int flip_dir)
+// about the boundary face.  Periodic directions are skipped, and so are the
+// faces for which mirror_lo or mirror_hi is false.  When the ghost cell is
+// outside the domain in direction flip_dir, an EB position p is mirrored to
+// mlebndfdlap_hm(p), or to mlebndfdlap_pmax() if p is 0; -1 disables this.
+void fill_domain_ghost (MultiFab& mf, Geometry const& geom, int flip_dir,
+                        GpuArray<bool,AMREX_SPACEDIM> const& mirror_lo,
+                        GpuArray<bool,AMREX_SPACEDIM> const& mirror_hi)
 {
     mf.FillBoundary(geom.periodicity());
     Box const domain = amrex::convert(geom.Domain(), mf.ixType());
@@ -85,25 +88,34 @@ void fill_domain_ghost (MultiFab& mf, Geometry const& geom, int flip_dir)
             hi[0] = dhi.x; hi[1] = dhi.y; hi[2] = dhi.z;
             bool outside = false;
             bool flip = false;
+            bool skip = false;
             for (int d = 0; d < AMREX_SPACEDIM; ++d) {
                 if (!is_periodic[d]) {
                     if (idx[d] < lo[d]) {
                         idx[d] = 2*lo[d] - idx[d] - (1-nodal[d]);
                         outside = true;
                         flip = flip || (d == flip_dir);
+                        skip = skip || !mirror_lo[d];
                     } else if (idx[d] > hi[d]) {
                         idx[d] = 2*hi[d] - idx[d] + (1-nodal[d]);
                         outside = true;
                         flip = flip || (d == flip_dir);
+                        skip = skip || !mirror_hi[d];
                     }
                 }
             }
-            if (outside) {
+            if (outside && !skip) {
                 Real const v = a(idx[0],idx[1],idx[2]);
                 a(i,j,k) = !flip ? v : ((v == Real(0.0)) ? mlebndfdlap_pmax() : mlebndfdlap_hm(v));
             }
         });
     }
+}
+
+void fill_domain_ghost (MultiFab& mf, Geometry const& geom, int flip_dir)
+{
+    GpuArray<bool,AMREX_SPACEDIM> const all{AMREX_D_DECL(true,true,true)};
+    fill_domain_ghost(mf, geom, flip_dir, all, all);
 }
 
 template <typename S, typename P>
@@ -498,6 +510,18 @@ MLEBNodeFDLaplacian::build_eb_data ()
                     }
                 }
             }
+
+            // Outside the domain the factory extends the geometry at the
+            // domain faces (eb2.extend_domain_face) instead of mirroring it.
+            // A node on a Neumann face whose edge normal to the face is cut
+            // would then see its ghost neighbor as uncovered and the edge to
+            // it as uncut, and take the reflected value of the covered node.
+            // Mirror the EB data instead, as on the coarse levels, consistent
+            // with the reflection of the solution.
+            fill_domain_ghost(m_levset[amrlev][0], m_geom[amrlev][0], -1);
+            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+                fill_domain_ghost(m_eb_pos[amrlev][0][idim], m_geom[amrlev][0], idim);
+            }
         }
 
         // Coarse levels: from the next finer level.
@@ -695,6 +719,27 @@ MLEBNodeFDLaplacian::build_eb_data ()
                              sizeof(int)*ld.local_size());
 #endif
         }
+    }
+}
+
+void
+MLEBNodeFDLaplacian::fill_phi_eb_domain_ghost (int amrlev)
+{
+    // setEBDirichlet evaluates the EB values where the factory's level set is
+    // covered, which outside the domain is the extended geometry.  Mirror them
+    // across the Neumann faces, where the level set mirrored in build_eb_data
+    // is used.  The other faces are left alone.  Nothing to do before
+    // setDomainBC; prepareForSolve calls this again.
+    if (m_lobc.empty() || int(m_phi_eb.size()) <= amrlev || m_phi_eb[amrlev].empty()) { return; }
+    GpuArray<bool,AMREX_SPACEDIM> mirror_lo, mirror_hi;
+    bool any = false;
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        mirror_lo[idim] = (m_lobc[0][idim] == LinOpBCType::Neumann);
+        mirror_hi[idim] = (m_hibc[0][idim] == LinOpBCType::Neumann);
+        any = any || mirror_lo[idim] || mirror_hi[idim];
+    }
+    if (any) {
+        fill_domain_ghost(m_phi_eb[amrlev], m_geom[amrlev][0], -1, mirror_lo, mirror_hi);
     }
 }
 
@@ -1033,6 +1078,9 @@ MLEBNodeFDLaplacian::prepareForSolve ()
     // to homogeneous Dirichlet on the EB instead.
     if (m_s_phi_eb == std::numeric_limits<Real>::lowest() && m_phi_eb.empty()) {
         m_s_phi_eb = Real(0.0);
+    }
+    for (int amrlev = 0; amrlev < int(m_phi_eb.size()); ++amrlev) {
+        fill_phi_eb_domain_ghost(amrlev);
     }
 
     // Set covered nodes to Dirichlet, but with a negative value.

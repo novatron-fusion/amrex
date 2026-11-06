@@ -9,7 +9,9 @@
 //     test of the matrix assembled by MLEBNodeFDLaplacian.  The hypre part is
 //     skipped when hypre is not available;
 //   * multigrid must stop coarsening before a level that can no longer see
-//     part of the EB, even when another part of the EB is still visible.
+//     part of the EB, even when another part of the EB is still visible;
+//   * an EB that crosses a Neumann domain face must give the solution of the
+//     domain mirrored about that face.
 //
 
 #include <AMReX.H>
@@ -343,6 +345,104 @@ void test_stretched_cells (Array<int,AMREX_SPACEDIM> const& is_periodic,
         "MG level 1 should be coarsened in the short directions only");
 }
 
+// Covered for x > x0 - |s|, where s is the last coordinate: an EB plane
+// inclined at 45 degrees to the face s = 0.  On that face, the edges normal to
+// it are cut in one row of nodes.
+struct InclinedPlaneIF
+{
+    Real x0;
+    [[nodiscard]] AMREX_GPU_HOST_DEVICE
+    Real operator() (AMREX_D_DECL(Real x, Real y, Real z)) const noexcept {
+        amrex::ignore_unused(AMREX_D_DECL(x,y,z));
+        return x - x0 + std::abs(AMREX_D_PICK(x,y,z));
+    }
+    [[nodiscard]] Real operator() (RealArray const& p) const noexcept {
+        return this->operator()(AMREX_D_DECL(p[0],p[1],p[2]));
+    }
+};
+
+// Solve with phi = 1 + x/2 on the EB and phi = 0 on the domain faces, except
+// the face s = 0, which is Neumann on the half domain s >= 0.  On the domain
+// mirrored about s = 0 it is not a face, so the two solutions must agree for
+// s >= 0.  Both domains start at index 0.
+MultiFab solve_inclined_plane (bool mirrored, bool rz, int n_cell, int max_grid_size,
+                               Real reltol, int verbose)
+{
+    constexpr int sdir = AMREX_SPACEDIM-1;
+    IntVect hi(n_cell-1);
+    RealArray prob_lo{AMREX_D_DECL(0.,0.,0.)}, prob_hi{AMREX_D_DECL(1.,1.,1.)};
+    if (mirrored) {
+        hi[sdir] = 2*n_cell-1;
+        prob_lo[sdir] = Real(-1.0);
+    }
+    Box const domain(IntVect(0), hi);
+    Geometry const geom(domain, RealBox(prob_lo, prob_hi), rz ? CoordSys::RZ : CoordSys::cartesian,
+                        Array<int,AMREX_SPACEDIM>{AMREX_D_DECL(0,0,0)});
+    BoxArray grids(domain);
+    grids.maxSize(max_grid_size);
+    DistributionMapping const dmap(grids);
+
+    // x0/dx is not an integer, so that no node is on the EB.
+    EB2::Build(EB2::makeShop(InclinedPlaneIF{Real(0.61803)}), geom, 0, 30);
+    auto factory = makeEBFabFactory(geom, grids, dmap, {2,2,2}, EBSupport::full);
+    auto const& ebfactory = *static_cast<EBFArrayBoxFactory const*>(factory.get());
+
+    LPInfo info;
+    MLEBNodeFDLaplacian linop({geom}, {grids}, {dmap}, info, {&ebfactory});
+    Array<LinOpBCType,AMREX_SPACEDIM> lobc, hibc;
+    for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+        lobc[idim] = LinOpBCType::Dirichlet;
+        hibc[idim] = LinOpBCType::Dirichlet;
+    }
+    if (rz) { lobc[0] = LinOpBCType::Neumann; } // the axis
+    if (!mirrored) { lobc[sdir] = LinOpBCType::Neumann; }
+    linop.setDomainBC(lobc, hibc);
+    linop.setSigma({AMREX_D_DECL(Real(1.0), Real(1.0), Real(1.0))});
+#if (AMREX_SPACEDIM == 2)
+    linop.setRZ(rz);
+#endif
+    linop.setEBDirichlet([=] AMREX_GPU_HOST_DEVICE (AMREX_D_DECL(Real x, Real, Real)) -> Real
+                         { return Real(1.0) + Real(0.5)*x; });
+
+    BoxArray const& nba = amrex::convert(grids, IntVect(1));
+    MultiFab rhs(nba, dmap, 1, 0);
+    rhs.setVal(Real(0.0));
+    MultiFab sol(nba, dmap, 1, 1);
+    sol.setVal(Real(0.0));
+
+    MLMG mlmg(linop);
+    mlmg.setVerbose(verbose);
+    mlmg.solve({&sol}, {&rhs}, reltol, Real(0.0));
+    return sol;
+}
+
+void test_eb_at_neumann_face (bool rz, int n_cell, int max_grid_size, Real reltol, int verbose)
+{
+    MultiFab const half = solve_inclined_plane(false, rz, n_cell, max_grid_size, reltol, verbose);
+    MultiFab const full = solve_inclined_plane(true, rz, n_cell, max_grid_size, reltol, verbose);
+
+    // The half domain is the upper half of the full one, shifted by n_cell.
+    constexpr int sdir = AMREX_SPACEDIM-1;
+    BoxArray sba = half.boxArray();
+    sba.shift(sdir, n_cell);
+    MultiFab shifted(sba, half.DistributionMap(), 1, 0);
+    for (MFIter mfi(shifted); mfi.isValid(); ++mfi) {
+        Box const& bx = mfi.validbox();
+        shifted[mfi].copy<RunOn::Device>(half[mfi], amrex::shift(bx, sdir, -n_cell), 0, bx, 0, 1);
+    }
+    MultiFab diff(sba, half.DistributionMap(), 1, 0);
+    diff.ParallelCopy(full, 0, 0, 1);
+    MultiFab::Subtract(diff, shifted, 0, 0, 1, 0);
+    Real const dmax = diff.norminf();
+    Real const smax = full.norminf();
+    amrex::Print() << "max |phi|          = " << smax << "\n"
+                   << "max |half - full|  = " << dmax << "\n";
+
+    Real const tol = std::is_same_v<Real,float> ? Real(1.e-2) : Real(1.e-8);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(dmax <= tol*smax,
+        "An EB crossing a Neumann face does not give the mirrored solution");
+}
+
 int main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
@@ -417,6 +517,13 @@ int main (int argc, char* argv[])
         amrex::Print() << "\n==== stretched cells, two short directions ====\n";
         test_stretched_cells(is_periodic, lobc, hibc, IntVect(2*n_cell, 2*n_cell, n_cell/2),
                              {Real(1.0), Real(1.0), Real(1.0)}, max_grid_size, reltol, verbose);
+#endif
+
+        amrex::Print() << "\n==== EB crossing a Neumann domain face ====\n";
+        test_eb_at_neumann_face(false, n_cell, max_grid_size, reltol, verbose);
+#if (AMREX_SPACEDIM == 2)
+        amrex::Print() << "\n==== EB crossing a Neumann domain face, RZ ====\n";
+        test_eb_at_neumann_face(true, n_cell, max_grid_size, reltol, verbose);
 #endif
     }
     amrex::Finalize();
