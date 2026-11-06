@@ -290,6 +290,8 @@ public:
     // These are public only because they launch GPU kernels.
 #ifdef AMREX_USE_EB
     void build_eb_data ();
+    //! Mirror the EB Dirichlet values into the ghost nodes across the Neumann domain faces.
+    void fill_phi_eb_domain_ghost (int amrlev);
     //! Drop coarse MG levels with too few unknowns, no EB, or a hidden EB feature.
     void limit_coarsening ();
 #endif
@@ -339,6 +341,7 @@ void MLEBNodeFDLaplacian::setEBDirichlet (F const& f)
                     });
                 }
             }
+            fill_phi_eb_domain_ghost(amrlev);
         }
     }
 }
