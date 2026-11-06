@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 using namespace amrex;
 
@@ -365,8 +366,8 @@ struct InclinedPlaneIF
 // the face s = 0, which is Neumann on the half domain s >= 0.  On the domain
 // mirrored about s = 0 it is not a face, so the two solutions must agree for
 // s >= 0.  Both domains start at index 0.
-MultiFab solve_inclined_plane (bool mirrored, bool rz, int n_cell, int max_grid_size,
-                               Real reltol, int verbose)
+MultiFab solve_inclined_plane (bool mirrored, bool rz, bool symmetric, int n_cell,
+                               int max_grid_size, Real reltol, int verbose)
 {
     constexpr int sdir = AMREX_SPACEDIM-1;
     IntVect hi(n_cell-1);
@@ -401,6 +402,7 @@ MultiFab solve_inclined_plane (bool mirrored, bool rz, int n_cell, int max_grid_
 #if (AMREX_SPACEDIM == 2)
     linop.setRZ(rz);
 #endif
+    linop.setEBSymmetric(symmetric);
     linop.setEBDirichlet([=] AMREX_GPU_HOST_DEVICE (AMREX_D_DECL(Real x, Real, Real)) -> Real
                          { return Real(1.0) + Real(0.5)*x; });
 
@@ -416,10 +418,13 @@ MultiFab solve_inclined_plane (bool mirrored, bool rz, int n_cell, int max_grid_
     return sol;
 }
 
-void test_eb_at_neumann_face (bool rz, int n_cell, int max_grid_size, Real reltol, int verbose)
+void test_eb_at_neumann_face (bool rz, bool symmetric, int n_cell, int max_grid_size,
+                              Real reltol, int verbose)
 {
-    MultiFab const half = solve_inclined_plane(false, rz, n_cell, max_grid_size, reltol, verbose);
-    MultiFab const full = solve_inclined_plane(true, rz, n_cell, max_grid_size, reltol, verbose);
+    MultiFab const half = solve_inclined_plane(false, rz, symmetric, n_cell, max_grid_size,
+                                               reltol, verbose);
+    MultiFab const full = solve_inclined_plane(true, rz, symmetric, n_cell, max_grid_size,
+                                               reltol, verbose);
 
     // The half domain is the upper half of the full one, shifted by n_cell.
     constexpr int sdir = AMREX_SPACEDIM-1;
@@ -519,12 +524,15 @@ int main (int argc, char* argv[])
                              {Real(1.0), Real(1.0), Real(1.0)}, max_grid_size, reltol, verbose);
 #endif
 
-        amrex::Print() << "\n==== EB crossing a Neumann domain face ====\n";
-        test_eb_at_neumann_face(false, n_cell, max_grid_size, reltol, verbose);
+        for (bool const symmetric : {false, true}) {
+            std::string const st = symmetric ? "symmetric" : "Shortley-Weller";
+            amrex::Print() << "\n==== EB crossing a Neumann domain face, " << st << " ====\n";
+            test_eb_at_neumann_face(false, symmetric, n_cell, max_grid_size, reltol, verbose);
 #if (AMREX_SPACEDIM == 2)
-        amrex::Print() << "\n==== EB crossing a Neumann domain face, RZ ====\n";
-        test_eb_at_neumann_face(true, n_cell, max_grid_size, reltol, verbose);
+            amrex::Print() << "\n==== EB crossing a Neumann domain face, RZ, " << st << " ====\n";
+            test_eb_at_neumann_face(true, symmetric, n_cell, max_grid_size, reltol, verbose);
 #endif
+        }
     }
     amrex::Finalize();
 }
