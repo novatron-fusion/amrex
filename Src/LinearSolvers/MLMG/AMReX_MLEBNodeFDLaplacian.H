@@ -96,18 +96,21 @@ public:
     /**
      * \brief Use the symmetric EB stencil (default false: Shortley-Weller).
      *
-     * Shortley-Weller weights the links of a node next to the EB by
-     * 2 / (h- + h+) per direction, where h- and h+ are the uncovered lengths,
-     * in cells, of the edges from the node to its two neighbors in that
-     * direction (1 for an edge the EB does not cut).  The matrix times the
-     * node volumes is then not symmetric: the potential at b of a charge on
-     * a node with one cut edge, of uncovered length h, is (1 + h) / 2 times
-     * the potential there of the same charge at b.  Particles near the EB
-     * then exert forces on the others that differ from the forces they
-     * feel, and the total energy is not conserved.  The symmetric stencil
-     * drops that factor (Gibou, Fedkiw, Cheng and Kang, J. Comput. Phys.
-     * 176, 205 (2002)): the links between uncovered nodes keep their regular
-     * coefficients, the link to the EB is 1/h, and the solution stays
+     * In each direction, the Shortley-Weller stencil at a node next to the
+     * EB is
+     *   2/(h- + h+) [(phi+ - phi)/h+ - (phi - phi-)/h-] / dx^2 ,
+     * where h- and h+ are the distances, in cells, from the node to its lower
+     * and upper neighbor or to the EB if it cuts that edge, and phi- and
+     * phi+ are the values there.  The factor 2/(h- + h+) is in the row of
+     * that node only, so the matrix (in RZ times the node volumes) is not
+     * symmetric: for a node a with one cut edge of length h, the solution at
+     * b for a unit source at a is (1 + h)/2 times the solution at a for a
+     * unit source at b.  In a particle method, particles near the EB then
+     * exert forces on the others that differ from the forces they feel, and
+     * the total energy is not conserved.  The symmetric stencil drops that
+     * factor (Gibou, Fedkiw, Cheng and Kang, J. Comput. Phys. 176, 205
+     * (2002)): the coefficients between uncovered nodes are the regular
+     * ones, the coefficient to the EB is 1/h, and the solution stays
      * second-order accurate.
      */
     void setEBSymmetric (bool flag) noexcept { m_eb_symmetric = flag; }
